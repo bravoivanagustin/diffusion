@@ -1,0 +1,68 @@
+# Gemelo GPU de test_pipeline.yaml — probar TODO el pipeline en GPU, donde las palancas dan efecto
+# REAL: AMP (fp16 -> más rápido y ~mitad de VRAM), num_workers/pin_memory (carga que no deja la GPU
+# ociosa) y cudnn.benchmark (auto-on en cuda). Sigue siendo un SMOKE (pocos pasos), no la corrida de
+# producción de cats_vp.yaml.
+#
+# Requisitos: una GPU (device: cuda) y un dataset de imágenes REAL en `data.root` (con bastantes
+# imágenes para que batch grande + workers tengan sentido). Correr desde diffusion-models/:
+#   uv run python scripts/train.py --config config/test/test_pipeline_gpu.yaml
+#
+# Qué mirar:
+#   - la barra tqdm con MUCHOS más it/s que en CPU.
+#   - checkpoints en 100/200/300/400 + retención ("2 conservados; N borrados").
+#   - al final, en models/test_pipeline_gpu/ quedan solo los 2 snapshots más nuevos (+ sidecars),
+#     el final `.pt`, su `_raw.pt` (EMA activo) y la curva.
+#   - RESUME: Ctrl-C a mitad y relanzar el mismo comando -> "reanudando desde …_stepNNNNN.pt".
+#
+# Para VER el efecto de AMP: corré una vez con `amp: true` y otra con `amp: false` y compará los it/s
+# de la barra (y el uso de VRAM con `nvidia-smi`). Para cudnn.benchmark no hay flag: se prende solo en
+# cuda.
+#
+# ¿Solo tenés las 2 imágenes de data/cats-prueba? Entonces bajá `batch_size: 2`, `num_workers: 0` e
+# `image_size: 16` (pero así no vas a ver el efecto de batch/workers; para eso hace falta un dataset).
+
+sde:
+  name: vp
+
+data:
+  kind: images
+  root: data/cats-v1      # ¡CAMBIÁ esto a tu carpeta de gatos! (muchas imágenes)
+  image_size: 32            # resolución del smoke (subí a 64 si querés acercarte a cats_vp)
+  batch_size: 32            # batch grande: aprovecha la GPU (bajalo si te quedás sin VRAM)
+  augment: true
+  shuffle: true
+  seed: 0
+  num_workers: 4            # carga en paralelo en CPU mientras la GPU entrena (efecto real acá)
+  pin_memory: true          # acelera la copia RAM -> VRAM (efecto real acá)
+
+model:                      # U-Net moderada (~pocos M de params): suficiente para ver el efecto GPU
+  name: unet
+  score_parametrization: epsilon
+  in_channels: 3
+  image_size: 32            # DEBE coincidir con data.image_size
+  base_channels: 64
+  channel_mults: [1, 2, 2]  # 3 niveles (32 -> 16 -> 8); image_size divisible por 2^(len-1)=4
+  num_res_blocks: 2
+  embed_dim: 128
+  time_embed_dim: 256
+  attn_resolutions: [16]    # atención en 16x16 (coherencia global)
+  groups: 32                # divide a {64, 128, 128} (GroupNorm)
+  time_scale: 1000.0
+
+train:
+  num_steps: 1000            # smoke corto; subilo si querés ver la pérdida bajar más
+  lr: 1.0e-4
+  t_eps: 1.0e-4
+  device: cuda              # <- la diferencia con test_pipeline.yaml
+  log_every: 50
+  seed: 0
+  time_sampling: log_uniform
+  ema_decay: 0.999
+  amp: true                 # AQUÍ SÍ: fp16 en GPU -> más rápido y ~mitad de VRAM
+  checkpoint_every: 100     # snapshots en 100/200/300/400 (4 intermedios) + el final (500)
+  keep_last_checkpoints: 2  # retención: deja solo los 2 más nuevos
+
+out:
+  checkpoint: models/test_pipeline_gpu/test_pipeline_gpu.pt
+  loss_curve: models/test_pipeline_gpu/test_pipeline_gpu_loss.png
+  train_log: models/test_pipeline_gpu/test_pipeline_gpu_log.jsonl  # estados del entrenamiento con timestamp

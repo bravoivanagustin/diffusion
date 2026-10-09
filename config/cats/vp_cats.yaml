@@ -1,0 +1,53 @@
+# Celda del estudio de ablación — Fase 2: VP-SDE entrenada sobre imágenes (gatos) con la U-Net.
+# Es la plantilla de una corrida de IMÁGENES: se lanza con el mismo CLI que el toy 2D, sólo cambia
+# el bloque `data:` (discriminador `kind: images`).
+#   Correr desde diffusion-models/:  python scripts/train.py --config config/cats/vp_cats.yaml
+#   Las rutas de 'out' son relativas al cwd (diffusion-models/).
+
+sde:                      # -> make_sde(name, **resto). Eje 1: cambiar la SDE exige reentrenar.
+  name: vp                # vp | ve | sub_vp
+  beta_min: 0.1
+  beta_max: 20.0
+  # OJO: NO declarar `data_dim` acá para imágenes. La forma de evento (C, H, W) se DERIVA del
+  # bloque `data:` (única fuente de verdad) y se le pasa a la SDE automáticamente; declararla
+  # también acá es un error de config (evita que `data:` y `sde:` se desincronicen).
+
+data:                     # fuente p_data(x_0). El discriminador `kind` elige la fuente:
+  kind: images            #   points (default, retrocompatible) | images. Con `images` la fuente
+                          #   es una carpeta de imágenes (torchvision) en vez de una nube de puntos.
+  root: data/cats-v1      # carpeta con las imágenes (relativa al cwd = diffusion-models/).
+                          #   Ajustar a tu carpeta de imágenes si usás otra.
+  image_size: 64          # H = W de trabajo. La forma de evento derivada es (3, 64, 64) — los
+                          #   canales están FIJOS en 3 (RGB), no es un parámetro configurable.
+                          #   Restricción image_size <-> U-Net: image_size debe ser divisible por
+                          #   2^(len(channel_mults)-1) (el factor de downsampling de la red; con
+                          #   los channel_mults por defecto (1,2,2,4) eso es 2^3 = 8, y 64 lo es).
+                          #   Un tamaño incompatible falla en la construcción de la U-Net, no acá.
+                          #   Además image_size DEBE coincidir con model.image_size (ver abajo).
+  batch_size: 32          # tamaño de batch (parámetro de la fuente, no del TrainConfig).
+  augment: true           # data augmentation (flip horizontal, etc.); opcional, default true.
+  crop: true              # center/random crop al tamaño pedido; opcional, default true.
+  seed: 0                 # semilla del shuffle de la fuente; opcional.
+
+train:                    # hiperparámetros del loop de optimización (-> TrainConfig)
+  num_steps: 100000       # pasos de optimización (reemplaza epochs; ver docs/project/training.md)
+  lr: 0.0002
+  t_eps: 1.0e-4           # piso del muestreo de t (evita t=0, sigma->0)
+  time_sampling: log_uniform  # muestreo de t: log-uniforme concentra señal de entrenamiento a t chico
+  seed: 0
+  device: cpu             # entrenar la U-Net en CPU es lento; subir a cuda cuando haya GPU.
+  grad_clip: 1.0
+  ema_decay: 0.999        # sombra EMA de los pesos: el checkpoint publica el promedio, no la foto
+                          #   del último paso. Sin la clave = pesos crudos.
+  checkpoint_every: 5000  # snapshot cada N pasos (…_stepNNNNN.pt) + sidecar de reanudación.
+
+model:                    # la red es la variable de control (fija entre celdas). Para imágenes,
+  name: unet              #   si falta `name`, default-ea a `unet` (para puntos default-ea a `mlp`).
+  image_size: 64          # DEBE coincidir con data.image_size (la U-Net fija su arquitectura por
+                          #   este tamaño). El resto de la arquitectura queda en sus defaults de
+                          #   referencia (base_channels, channel_mults, attn_resolutions, …): la
+                          #   red no se toca entre celdas para no romper el estudio de ablación.
+
+out:                      # rutas de salida (se crean los directorios)
+  checkpoint: models/phase_2/vp_cats.pt
+  loss_curve: models/phase_2/vp_cats_loss.png

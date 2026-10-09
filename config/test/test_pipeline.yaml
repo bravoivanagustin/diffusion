@@ -1,0 +1,82 @@
+# Smoke rápido del pipeline completo — para probar en CPU en segundos que TODO lo que venimos
+# implementando funciona junto: imágenes → U-Net → AMP → EMA → checkpointing intermedio → retención
+# rolling → barra de progreso → (y después, reanudación) → pérdida de validación (opt-in, ver el
+# bloque `data:`).
+#
+# Correr desde diffusion-models/:
+#   uv run python scripts/train.py --config config/test/test_pipeline.yaml
+#
+# Tiempo esperado: ~45-60 s en CPU (la U-Net, aunque chica, hace convoluciones reales). OJO: con
+# `amp: true` en CPU el bf16 NO tiene aceleración —puede ir igual o MÁS lento—; está para ejercitar
+# el camino de AMP sin GPU. En GPU (device: cuda) es donde AMP/cudnn.benchmark dan el speedup real.
+# Si lo querés más rápido para iterar, bajá `num_steps` (o poné `amp: false`).
+#
+# Qué mirar mientras corre / al terminar:
+#   - la BARRA DE PROGRESO (tqdm): %, ETA, it/s y `perdida` como postfix.
+#   - mensajes "Checkpoint (stepNNNNN) -> …" cada 30 pasos, y luego
+#     "  retención: 2 snapshots conservados; N archivos viejos borrados".
+#   - en models/test_pipeline/ quedan SOLO los 2 snapshots más nuevos (+ sus sidecars),
+#     el checkpoint final `test_pipeline.pt`, su `test_pipeline_raw.pt` (crudos, porque hay EMA)
+#     y la curva `test_pipeline_loss.png`.
+#   - probar la REANUDACIÓN: cortar con Ctrl-C a mitad y volver a correr el mismo comando →
+#     "Acción: reanudando desde …_stepNNNNN.pt (paso N)"; o borrar el final y relanzar.
+#   - con la VALIDACIÓN activada (bloque `data:`): una línea "Validación (paso N): val=… val(EMA)=…
+#     train fijo=…" en cada checkpoint (misma cadencia), el cierre "Validación -> paso 150: …", los
+#     registros `"event": "val"` en el `.jsonl` y la curva del PNG con CUATRO series y leyenda.
+
+sde:
+  name: vp                  # forward VP-SDE (Eje 1)
+
+data:
+  kind: images              # dispatcher -> fuente de imágenes
+  root: data/cats-prueba    # las 2 imágenes de prueba que ya están en el repo
+  image_size: 16            # chiquito a propósito: rápido en CPU (forma de evento (3,16,16))
+  batch_size: 2             # las 2 imágenes (memorización de juguete)
+  augment: false
+  shuffle: false
+  seed: 0
+  num_workers: 0            # knob de carga (en GPU con dataset grande subilo a 4-8); 0 = sin overhead en CPU
+  pin_memory: false         # knob de carga (en GPU ponelo true); en CPU no aplica
+  # PÉRDIDA DE VALIDACIÓN (`val_root`, opt-in) — queda COMENTADA porque `data/` está gitignored y no
+  # hay ninguna carpeta held-out lista: el reparto se hace UNA vez a mano, y la carpeta de validación
+  # tiene que quedar HERMANA de la de train (el descubrimiento de imágenes es recursivo, así que un
+  # `val/` adentro del `root` de train lo contaminaría). Con las 2 imágenes de cats-prueba el reparto
+  # más chico posible es 1 y 1:
+  #   uv run python scripts/split_dataset.py --src data/cats-prueba --out data/cats-prueba-split --val-frac 0.5 --seed 0
+  # Después reemplazá el `root` y el `batch_size` de arriba por estas tres líneas (batch_size baja a
+  # 1: infinite_batches exige batch_size <= cantidad de imágenes de la carpeta de train):
+  #   root: data/cats-prueba-split/train
+  #   batch_size: 1
+  #   val_root: data/cats-prueba-split/val
+
+model:                      # U-Net mínima (~pocos miles de params) para que vuele en CPU
+  name: unet
+  score_parametrization: epsilon   # la red predice el ruido; el wrapper -> score = -red/σ_t
+  in_channels: 3
+  image_size: 16            # DEBE coincidir con data.image_size
+  base_channels: 16
+  channel_mults: [1, 2]     # 2 niveles (16 -> 8); image_size divisible por 2^(len-1)=2
+  num_res_blocks: 1
+  embed_dim: 32
+  time_embed_dim: 64
+  attn_resolutions: []      # sin atención (más rápido)
+  groups: 8                 # divide a {16, 32} (GroupNorm)
+  time_scale: 1000.0
+
+train:
+  num_steps: 150            # pocos pasos: corre en ~segundos en CPU
+  lr: 1.0e-3
+  t_eps: 1.0e-4
+  device: cpu               # cambiá a cuda si querés ver AMP/cudnn.benchmark de verdad en GPU
+  log_every: 30             # cadencia del postfix de la barra (y del print con --quiet? no: --quiet apaga todo)
+  seed: 0
+  time_sampling: log_uniform   # concentra el muestreo de t en valores chicos
+  ema_decay: 0.999          # publica la sombra EMA en cada checkpoint (+ hermano _raw en el final)
+  amp: true                 # precisión mixta: en CPU corre en bfloat16 (ejercita el camino sin GPU)
+  checkpoint_every: 30      # snapshots en 30/60/90/120 (4 intermedios) + el final (150)
+  keep_last_checkpoints: 2  # retención: deja solo los 2 más nuevos -> vas a ver borrar 30 y 60
+
+out:
+  checkpoint: models/test_pipeline/test_pipeline.pt
+  loss_curve: models/test_pipeline/test_pipeline_loss.png
+  train_log: models/test_pipeline/test_pipeline_log.jsonl  # estados del entrenamiento con timestamp

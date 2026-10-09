@@ -1,0 +1,43 @@
+# Celda del estudio de ablación: VP-SDE entrenada sobre la mezcla de 8 gaussianas.
+# Correr desde diffusion-models/:  python scripts/train.py --config config/toy/vp_mixture.yaml
+# Las rutas de 'out' son relativas al cwd (diffusion-models/).
+
+sde:                      # -> make_sde(name, **resto). Eje 1: cambiar la SDE exige reentrenar.
+  name: vp                # vp | ve | sub_vp
+  beta_min: 0.1
+  beta_max: 20.0
+
+data:                     # fuente p_data(x_0); ver `python scripts/data_generation.py --help`
+  shape: mixture          # gaussian | mixture | two_moons | spiral | swiss_roll
+  dim: 2
+  n_samples: 5000         # tamaño del dataset (parámetro de la fuente, no del TrainConfig)
+  batch_size: 256         # tamaño de batch (parámetro de la fuente, no del TrainConfig)
+  n_components: 8
+  seed: 0
+
+train:                    # hiperparámetros del loop de optimización (-> TrainConfig)
+  num_steps: 19200        # pasos de optimización (reemplaza epochs; ver docs/project/training.md)
+  lr: 0.001
+  t_eps: 1.0e-4           # piso del muestreo de t (evita t=0, sigma->0)
+  time_sampling: log_uniform  # muestreo de t: log-uniforme concentra señal de entrenamiento a t chico
+  seed: 0
+  device: cpu
+  grad_clip: 1.0
+  ema_decay: 0.999        # sombra EMA de los pesos (Song/DDPM/Karras) con rampa de warmup: el
+                          #   checkpoint publica los pesos promediados en vez de la foto del último
+                          #   paso de Adam. Sin la clave = sin EMA (pesos crudos, como antes).
+  # checkpoint_every: 50  # opcional: 0 = solo el checkpoint final (default). N>0 guarda además
+                          #   un snapshot cada N pasos (…_stepNNNNN.pt) + su sidecar de reanudación.
+
+model:                  # opcional: la red es la variable de control (fija entre celdas).
+   name: mlp             # si falta, se usa {name: mlp} dimensionado desde el dato/SDE.
+   embed_dim: 128        # Descomentar solo para experimentos de arquitectura, no de ablación.
+   hidden_dim: 512
+   num_blocks: 4
+   activation: silu
+   time_scale: 1000      # escala del embedding de tiempo: resolución a t chico (convención DDPM/Song)
+   score_parametrization: epsilon  # la red predice epsilon; se envuelve con EpsilonScoreWrapper (score = -eps/sigma_t)
+
+out:                      # rutas de salida (se crean los directorios)
+  checkpoint: models/phase_1/vp_mixture.pt
+  loss_curve: models/phase_1/vp_mixture_loss.png

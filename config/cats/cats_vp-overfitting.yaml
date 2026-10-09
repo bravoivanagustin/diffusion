@@ -1,0 +1,89 @@
+# Entrenamiento escalado a dataset completo (9304 gatos en data/cats-v1, 64x64)
+# Hardware objetivo: RTX 3090 (24GB VRAM)
+#
+# REQUISITO PREVIO (una sola vez, antes de entrenar): partir el dataset en train/val.
+#   uv run python scripts/split_dataset.py --src data/cats-v1 --out data/cats-v1-split \
+#       --val-frac 0.05 --seed 0
+# Deja data/cats-v1-split/train (8839 imgs) y data/cats-v1-split/val (465), HERMANAS. Copia, no
+# mueve: data/cats-v1 queda intacto. El split es determinístico —misma seed + mismo conjunto de
+# archivos ⇒ misma partición—, así que la seed documentada acá reproduce el reparto exacto.
+# NO agregues fotos a data/cats-v1 y vuelvas a splitear con la misma seed esperando el mismo
+# reparto: el resultado depende del conjunto de archivos, y algo que era val puede pasar a train.
+
+sde:                      # forward VP-SDE
+  name: vp
+
+data:                     # fuente de imágenes
+  kind: images
+  # OJO: root apunta al train/ del split, NO a data/cats-v1. El descubrimiento de imágenes es
+  # RECURSIVO, así que si root siguiera siendo la carpeta madre el loop leería también las
+  # imágenes held-out y contaminaría la validación en silencio (el gap daría ~0 y no querría
+  # decir nada). Por eso val/ tiene que ser HERMANA de train/, nunca estar adentro.
+  root: data/cats-v1-split/train
+  val_root: data/cats-v1-split/val   # pérdida de validación (opt-in): sin esta clave, corrida idéntica a antes
+  image_size: 64          # subimos la resolución a 64x64
+  batch_size: 128         # aprovechando los 24GB de la 3090; la validación reusa este mismo batch
+  augment: true           # volteo horizontal aleatorio (duplica el dataset virtualmente)
+  shuffle: true           # obligatorio para generalizar
+  seed: 0
+  num_workers: 8          # carga en paralelo usando la CPU (decodificación de imágenes)
+  pin_memory: true        # acelera la transferencia de RAM a la VRAM de la GPU
+  # num_workers > 0 NO funciona en Windows (el spawn no puede picklear la clase de dataset, que es
+  # local a una fábrica con import diferido). En Linux —el laboratorio— anda. Para probar este
+  # config en Windows hay que bajarlo a 0. Las dos fuentes de medición usan 0 siempre.
+  #
+  # De val_root se derivan DOS fuentes de medición, sin más claves: el examen de validación
+  # (las 465 de val/) y un examen fijo de ENTRENAMIENTO del mismo tamaño (465 de train/,
+  # las primeras del orden ordenado). Las dos se leen en orientación canónica —sin el augment
+  # de arriba— y con el mismo t y el mismo ruido en cada evaluación. Ese examen de train es lo
+  # que hace interpretable el gap: el par comparable es 'train (examen fijo)' vs 'val (pesos
+  # vivos)', NO la curva densa per-step contra la de validación.
+
+model:                    # arquitectura U-Net "Premium" (37.1M parámetros, 142 MB en fp32)
+  name: unet
+  score_parametrization: epsilon
+  in_channels: 3
+  image_size: 64          # DEBE coincidir con data.image_size
+  base_channels: 128      # mayor capacidad expresiva inicial
+  channel_mults: [1, 2, 2, 2] # 4 niveles
+  num_res_blocks: 2       # red más profunda
+  embed_dim: 256
+  time_embed_dim: 512     # respeta la regla de 4x base_channels (aprox)
+  attn_resolutions: [16, 8] # Atención en resoluciones bajas para coherencia global
+  groups: 32              # divide perfecto a 128 (GroupNorm)
+  time_scale: 1000.0
+
+train:                     # hiperparámetros del loop
+  num_steps: 120000         # aumentamos pasos para procesar el dataset muchas veces
+  # Las dos cadencias son INDEPENDIENTES a propósito: checkpoint_every cuesta disco (cada snapshot
+  # intermedio pesa ~708 MB: 142 de pesos + 567 de sidecar), val_every no cuesta ninguno. Antes la
+  # validación seguía a checkpoint_every y subir la resolución de la curva obligaba a escribir más
+  # snapshots; con val_every la observabilidad ya no se paga en disco.
+  checkpoint_every: 15000  # snapshots: 3 intermedios (~2.1 GB escritos). Cada uno deja su sidecar …_stepNNNNN.resume.pt para reanudar
+  keep_last_checkpoints: 4 # retención rolling: conserva solo los 4 snapshots más nuevos (borra los viejos); el final y su _raw nunca se tocan. Subilo/bajalo o quitalo (= conservar todos)
+  # Cadencia de la validación, desacoplada de los snapshots: 60 puntos en la corrida en vez de los 4
+  # que daría checkpoint_every, sin escribir un snapshot de más. Costo: 12 forwards por evaluación
+  # (~1.2% del cómputo) más el re-decode de las 465x2 imágenes del examen, que es CPU-bound y no lo
+  # acelera la GPU. Se lo dejó múltiplo de checkpoint_every para que cada snapshot guardado tenga un
+  # punto medido en su paso exacto (útil para decidir de cuál samplear). Quitala y la validación
+  # vuelve a seguir a checkpoint_every.
+  val_every: 1000
+  lr: 1.0e-4               # LR más estándar para entrenamientos grandes y estables
+  t_eps: 1.0e-4
+  device: cuda             # usar la GPU (RTX 3090). El examen fijo es específico del device: un
+                           # generator de CUDA y uno de CPU con la misma semilla dan secuencias
+                           # distintas, así que reanudar en CPU cortaría la comparabilidad de la
+                           # serie. Cada registro 'val' del .jsonl lleva el device para detectarlo.
+  log_every: 1000
+  seed: 0
+  time_sampling: log_uniform  # la validación usa el MISMO muestreo de t (y sus pesos de importance
+                              # sampling), así que las dos curvas están en la misma escala
+  ema_decay: 0.999        # satura temprano: el EMA es una ventana real, no el promedio de la corrida
+  amp: true               # Automatic Mixed Precision -> Ahorra ~50% VRAM. La validación se computa
+                          # SIEMPRE en fp32 (autocast deshabilitado a propósito), así que su número
+                          # es comparable contra celdas entrenadas sin AMP.
+
+out:                      # salidas
+  checkpoint: /mnt/data/abravo/diffusion-models/phase_2-overfitting/cats_vp.pt
+  loss_curve: /mnt/data/abravo/diffusion-models/phase_2-overfitting/cats_vp_loss.png
+  train_log: /mnt/data/abravo/diffusion-models/phase_2-overfitting/cats_vp_train_log.jsonl 

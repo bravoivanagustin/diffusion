@@ -1,0 +1,53 @@
+# Réplica del entrenamiento del notebook 06 (U-Net sobre data/cats-prueba, memorización de 2 gatos).
+# Correr desde diffusion-models/:  python scripts/train.py --config config/cats/cats_prueba_vp.yaml
+# (root y out son relativos al cwd = diffusion-models/, igual que _root en el notebook.)
+#
+# Equivale a, en el notebook:
+#   sde  = make_sde("vp", data_dim=(3,32,32))          # data_dim se DERIVA de data: (no se declara acá)
+#   net  = make_model("unet", **UNET_KWARGS)
+#   net  = EpsilonScoreWrapper(net, sigma de la VP)     # -> model.score_parametrization: epsilon
+#   cfg  = TrainConfig(num_steps=5000, lr=1e-3, t_eps=1e-4, log_every=500, seed=0,
+#                      time_sampling="log_uniform", ema_decay=0.999, device="cpu")
+#   result = train(sde, net, data, cfg)
+#   save_checkpoint(result, CKPT, model_spec={...}, raw_sibling=True)  # el CLI ya hace raw_sibling
+
+sde:                      # forward VP-SDE (defaults beta_min=0.1 / beta_max=20.0, como make_sde("vp"))
+  name: vp
+  # NO declarar data_dim acá: para kind=images la forma de evento se deriva de data: (única fuente de verdad).
+
+data:                     # fuente de imágenes -> infinite_batches
+  kind: images            # discriminador del dispatcher (points | images)
+  root: data/cats-prueba  # 2 imágenes 64x64 (gitignored); ajustar a tu carpeta si hace falta
+  image_size: 32          # lado del cuadrado; la forma de evento sale (3, 32, 32)
+  batch_size: 2           # batch completo (solo hay 2 imágenes; infinite_batches corta si pedís más)
+  augment: false          # sin volteo: memorización limpia
+  shuffle: false          # orden fijo -> reproducible con seed
+  seed: 0
+
+model:                    # red de score -> make_model("unet", **resto); es la variable de control (fija)
+  name: unet
+  score_parametrization: epsilon   # la U-Net predice el ruido; el wrapper -> score = -red/sigma_t
+  in_channels: 3
+  image_size: 32          # DEBE coincidir con data.image_size (restricción image_size <-> U-Net)
+  base_channels: 32
+  channel_mults: [1, 2, 2]   # image_size divisible por 2**(len-1)=4 (32/4=8)
+  num_res_blocks: 1
+  embed_dim: 64
+  time_embed_dim: 128
+  attn_resolutions: []    # sin self-attention (config chica, ~1M params)
+  groups: 8               # divide {32, 64, 64}
+  time_scale: 1000.0      # escala del embedding de tiempo (resolución a t chico; convención DDPM/Song)
+
+train:                    # hiperparámetros del loop (-> TrainConfig)
+  num_steps: 5000
+  lr: 1.0e-3
+  t_eps: 1.0e-4
+  device: cpu
+  log_every: 500
+  seed: 0
+  time_sampling: log_uniform   # concentra el muestreo de t en valores chicos
+  ema_decay: 0.999             # publica la sombra EMA en el checkpoint (+ hermano …_raw.pt)
+
+out:                      # salidas (se crean los directorios; el CLI escribe además …_raw.pt con EMA)
+  checkpoint: models/phase_2/cats_prueba_vp.pt
+  loss_curve: models/phase_2/cats_prueba_vp_loss.png

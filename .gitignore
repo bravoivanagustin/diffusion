@@ -1,0 +1,66 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+
+# === Empaquetado / build ===
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# === Entornos virtuales ===
+.venv/
+venv/
+env/
+ENV/
+
+# === Tests / cobertura / linters ===
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+
+# === Jupyter ===
+.ipynb_checkpoints/
+
+# === Artefactos generados / pesos de modelos ===
+# Los datos y previews son reproducibles desde scripts/data_generation.py (con --seed).
+# Si querés versionar algún preview puntual: borrá esta línea o agregá "!data/<archivo>".
+data/
+# Pesos de entrenamiento (para cuando lleguen los modelos):
+*.pt
+*.pth
+*.ckpt
+
+# === Imagenes y PDFs ===
+*.jpg
+*.png
+*.pdf
+
+# === Editores / IDE ===
+.vscode/
+.idea/
+*.swp
+
+# === Sistema operativo (Windows / OneDrive / macOS) ===
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store
+
+# === Claude y Antigravity ===
+.claude/
+.antigravity/
+.kiro/
+CLAUDE.md
+antigravity.md
+
+# === Docs ===
+docs/ 
