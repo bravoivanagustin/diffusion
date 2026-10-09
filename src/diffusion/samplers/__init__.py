@@ -83,7 +83,7 @@ def make_sampler(
 
 # Importado al final: ``generate`` depende de ``make_sampler`` (definido arriba) y de los
 # módulos upstream (``training``/``sde``), que no importan ``samplers`` (sin ciclo).
-from .generate import generate_from_checkpoint
+from .generate import generate_from_checkpoint, load_score_model
 
 __all__ = [
     "ReverseSampler",
@@ -92,6 +92,7 @@ __all__ = [
     "available_samplers",
     "make_sampler",
     "generate_from_checkpoint",
+    "load_score_model",
     "EulerMaruyama",
     "ProbabilityFlowODE",
     "HeunODE",

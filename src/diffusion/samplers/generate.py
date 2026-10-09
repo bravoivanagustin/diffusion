@@ -28,7 +28,7 @@ import pathlib
 import torch
 
 from ..models import EpsilonScoreWrapper, ScoreModel, make_model
-from ..sde import make_sde
+from ..sde import ForwardSDE, make_sde
 from ..training import load_checkpoint
 
 
@@ -104,6 +104,64 @@ def generate_from_checkpoint(
     # paquete (``__init__`` importa este módulo; ``make_sampler`` vive en ``__init__``).
     from . import make_sampler
 
+    net, sde, _ = load_score_model(
+        checkpoint_path, map_location=map_location, model=model, device=device
+    )
+
+    generator: torch.Generator | None = None
+    if seed is not None:
+        # El generator debe vivir en el device del sampleo (randn con generator exige match).
+        generator = torch.Generator(device=device) if device is not None else torch.Generator()
+        generator.manual_seed(int(seed))
+
+    sampler = make_sampler(sampler_name, sde, net, n_steps=n_steps, **sampler_kwargs)
+    result = sampler.sample(
+        n_samples, generator=generator, device=device, return_trajectory=save_trajectory
+    )
+    if save_trajectory:
+        x0, trajectory = result
+    else:
+        x0, trajectory = result, None
+
+    if out is not None:
+        import numpy as np
+
+        out_path = pathlib.Path(out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        arrays = {"samples": x0.cpu().numpy()}
+        if save_trajectory:
+            arrays["trajectory"] = trajectory.cpu().numpy()
+        np.savez(out_path, **arrays)
+
+    return x0
+
+
+def load_score_model(
+    checkpoint_path: str | pathlib.Path,
+    *,
+    map_location: str = "cpu",
+    model: ScoreModel | None = None,
+    device: str | None = None,
+) -> tuple[torch.nn.Module, ForwardSDE, dict]:
+    """Reconstruye la red de score (en ``eval``) y la SDE de un checkpoint, sin samplear.
+
+    Es la mitad "carga" de :func:`generate_from_checkpoint`, expuesta para los callers que
+    necesitan armar el sampler a mano (p. ej. para leer su grilla temporal o capturar la
+    trayectoria). Aplica el mismo wrap ε que la generación cuando la receta lo pide.
+
+    Args:
+        checkpoint_path: Ruta del ``.pt``; debe existir.
+        map_location: Dispositivo donde cargar los pesos (default ``"cpu"``).
+        model: Red a la que cargarle los pesos si el checkpoint no trae receta.
+        device: Si no es ``None``, mueve la red a ese device.
+
+    Returns:
+        ``(net, sde, meta)``: la red lista para usar como ``score_fn``, la SDE reconstruida y
+        la metadata cruda del checkpoint.
+
+    Raises:
+        FileNotFoundError, KeyError, ValueError: Igual que :func:`generate_from_checkpoint`.
+    """
     path = pathlib.Path(checkpoint_path)
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint inexistente: {path}")
@@ -157,29 +215,4 @@ def generate_from_checkpoint(
     if device is not None:
         net = net.to(device)  # generación en GPU: la red va al device y el sampler samplea ahí
 
-    generator: torch.Generator | None = None
-    if seed is not None:
-        # El generator debe vivir en el device del sampleo (randn con generator exige match).
-        generator = torch.Generator(device=device) if device is not None else torch.Generator()
-        generator.manual_seed(int(seed))
-
-    sampler = make_sampler(sampler_name, sde, net, n_steps=n_steps, **sampler_kwargs)
-    result = sampler.sample(
-        n_samples, generator=generator, device=device, return_trajectory=save_trajectory
-    )
-    if save_trajectory:
-        x0, trajectory = result
-    else:
-        x0, trajectory = result, None
-
-    if out is not None:
-        import numpy as np
-
-        out_path = pathlib.Path(out)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        arrays = {"samples": x0.cpu().numpy()}
-        if save_trajectory:
-            arrays["trajectory"] = trajectory.cpu().numpy()
-        np.savez(out_path, **arrays)
-
-    return x0
+    return net, sde, meta
