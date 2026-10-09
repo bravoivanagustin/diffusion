@@ -32,3 +32,16 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+# En Linux, torch/torchvision salen del índice de PyTorch para CUDA 12.6 en vez de PyPI: el wheel
+# de PyPI de torch 2.12 es cu130 y exige un driver más nuevo que el del servidor (error 804 en una
+# 3090). Con CUDA 12.x alcanza cualquier driver de la serie 12 (compatibilidad de versión menor).
+# Windows sigue usando PyPI.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
